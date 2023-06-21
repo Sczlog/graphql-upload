@@ -55,6 +55,9 @@ export default function processRequest(
     /** @type {Map<string, Upload>} */
     let map;
 
+    /** @type {Record<string,any>} */
+    let parsedMap;
+
     const parser = busboy({
       headers: request.headers,
       defParamCharset: "utf8",
@@ -96,6 +99,50 @@ export default function processRequest(
       reject(exitError);
     }
 
+    function resolver() {
+      const mapEntries = Object.entries(parsedMap);
+
+      // Check max files is not exceeded, even though the number of files
+      // to parse might not match the map provided by the client.
+      if (mapEntries.length > maxFiles)
+        return exit(createError(413, `${maxFiles} max file uploads exceeded.`));
+
+      map = new Map();
+      for (const [fieldName, paths] of mapEntries) {
+        if (!Array.isArray(paths))
+          return exit(
+            createError(
+              400,
+              `Invalid type for the ‘map’ multipart field entry key ‘${fieldName}’ array (${GRAPHQL_MULTIPART_REQUEST_SPEC_URL}).`
+            )
+          );
+
+        map.set(fieldName, new Upload());
+
+        for (const [index, path] of paths.entries()) {
+          if (typeof path !== "string")
+            return exit(
+              createError(
+                400,
+                `Invalid type for the ‘map’ multipart field entry key ‘${fieldName}’ array index ‘${index}’ value (${GRAPHQL_MULTIPART_REQUEST_SPEC_URL}).`
+              )
+            );
+
+          try {
+            operationsPath.set(path, map.get(fieldName));
+          } catch (error) {
+            return exit(
+              createError(
+                400,
+                `Invalid object path for the ‘map’ multipart field entry key ‘${fieldName}’ array index ‘${index}’ value ‘${path}’ (${GRAPHQL_MULTIPART_REQUEST_SPEC_URL}).`
+              )
+            );
+          }
+        }
+      }
+      resolve(operations);
+    }
+
     parser.on("field", (fieldName, value, { valueTruncated }) => {
       if (valueTruncated)
         return exit(
@@ -129,17 +176,11 @@ export default function processRequest(
             );
 
           operationsPath = objectPath(operations);
-
+          if (parsedMap) {
+            resolver();
+          }
           break;
         case "map": {
-          if (!operations)
-            return exit(
-              createError(
-                400,
-                `Misordered multipart fields; ‘map’ should follow ‘operations’ (${GRAPHQL_MULTIPART_REQUEST_SPEC_URL}).`
-              )
-            );
-
           let parsedMap;
           try {
             parsedMap = JSON.parse(value);
@@ -164,51 +205,9 @@ export default function processRequest(
                 `Invalid type for the ‘map’ multipart field (${GRAPHQL_MULTIPART_REQUEST_SPEC_URL}).`
               )
             );
-
-          const mapEntries = Object.entries(parsedMap);
-
-          // Check max files is not exceeded, even though the number of files
-          // to parse might not match the map provided by the client.
-          if (mapEntries.length > maxFiles)
-            return exit(
-              createError(413, `${maxFiles} max file uploads exceeded.`)
-            );
-
-          map = new Map();
-          for (const [fieldName, paths] of mapEntries) {
-            if (!Array.isArray(paths))
-              return exit(
-                createError(
-                  400,
-                  `Invalid type for the ‘map’ multipart field entry key ‘${fieldName}’ array (${GRAPHQL_MULTIPART_REQUEST_SPEC_URL}).`
-                )
-              );
-
-            map.set(fieldName, new Upload());
-
-            for (const [index, path] of paths.entries()) {
-              if (typeof path !== "string")
-                return exit(
-                  createError(
-                    400,
-                    `Invalid type for the ‘map’ multipart field entry key ‘${fieldName}’ array index ‘${index}’ value (${GRAPHQL_MULTIPART_REQUEST_SPEC_URL}).`
-                  )
-                );
-
-              try {
-                operationsPath.set(path, map.get(fieldName));
-              } catch (error) {
-                return exit(
-                  createError(
-                    400,
-                    `Invalid object path for the ‘map’ multipart field entry key ‘${fieldName}’ array index ‘${index}’ value ‘${path}’ (${GRAPHQL_MULTIPART_REQUEST_SPEC_URL}).`
-                  )
-                );
-              }
-            }
+          if (operations) {
+            resolver();
           }
-
-          resolve(operations);
         }
       }
     });
